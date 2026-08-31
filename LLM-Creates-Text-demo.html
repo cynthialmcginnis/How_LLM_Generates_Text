@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How an LLM Generates Text</title>
+<style>
+  :root {
+    --navy: #003366; --navy-light: #0a4a8a; --gold: #F2A900; --light-blue: #F2F6FA;
+    --ink: #1A1A1A; --grey-border: #D7DEE6; --gray: #55606B;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; background: var(--light-blue); color: var(--ink); margin: 0; padding: 0 0 60px 0; }
+  header { background: var(--navy); color: #fff; padding: 28px 24px 24px 24px; border-bottom: 6px solid var(--gold); }
+  header h1 { margin: 0 0 6px 0; font-size: 1.5rem; }
+  header p { margin: 0; color: #CFE0F0; font-size: 0.95rem; max-width: 780px; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 20px 0 20px; }
+  section.card { background: #fff; border: 1px solid var(--grey-border); border-radius: 8px; padding: 20px 22px; margin-bottom: 20px; }
+  section.card h2 { margin: 0 0 12px 0; font-size: 1.05rem; color: var(--navy); border-bottom: 2px solid var(--gold); display: inline-block; padding-bottom: 4px; }
+  .status { font-size: 0.9rem; color: var(--gray); font-style: italic; }
+  .status.ready { color: #2E7D32; font-style: normal; font-weight: bold; }
+
+  input[type=text] { width: 100%; font-family: Arial, sans-serif; font-size: 1rem; padding: 10px; border: 1px solid var(--grey-border); border-radius: 6px; }
+  .context-row { display: flex; gap: 10px; align-items: center; }
+  .context-row input { flex: 1; }
+
+  .tokens { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+  .token { background: var(--navy); color: #fff; padding: 4px 10px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 0.85rem; }
+  .token.new { background: var(--gold); color: var(--navy); font-weight: bold; }
+
+  #networkSvg { width: 100%; height: auto; display: block; }
+  .net-node { fill: var(--light-blue); stroke: var(--navy); stroke-width: 1.5; }
+  .net-node.pulse { fill: var(--gold); }
+  .net-line { stroke: #C6D3E0; stroke-width: 1; }
+  .net-line.pulse { stroke: var(--gold); stroke-width: 2; }
+  .net-label { font-family: Arial, sans-serif; font-size: 11px; fill: var(--gray); text-anchor: middle; }
+  .net-caption { font-size: 0.82rem; color: var(--gray); font-style: italic; margin-top: 8px; }
+
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 14px 0; }
+  button.primary { background: var(--navy); color: #fff; border: none; padding: 11px 22px; border-radius: 6px; font-size: 0.95rem; font-weight: bold; cursor: pointer; }
+  button.primary:hover:not(:disabled) { background: var(--navy-light); }
+  button.primary:disabled { background: #9AA6B2; cursor: not-allowed; }
+  button.secondary { background: #fff; color: var(--navy); border: 1.5px solid var(--navy); padding: 10px 18px; border-radius: 6px; font-size: 0.9rem; cursor: pointer; }
+  button.secondary:hover { background: var(--light-blue); }
+  .temp-control { display: flex; align-items: center; gap: 8px; font-size: 0.88rem; color: var(--gray); }
+  .temp-control input[type=range] { width: 140px; }
+  .temp-value { font-weight: bold; color: var(--navy); min-width: 32px; }
+
+  .candidates { margin-top: 16px; }
+  .candidate-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; cursor: pointer; padding: 4px; border-radius: 6px; }
+  .candidate-row:hover { background: var(--light-blue); }
+  .candidate-token { font-family: 'Courier New', monospace; font-weight: bold; width: 130px; flex-shrink: 0; font-size: 0.9rem; background: #fff; border: 1px solid var(--grey-border); border-radius: 4px; padding: 3px 8px; text-align: center; }
+  .candidate-bar-track { flex: 1; background: #EEF2F6; border-radius: 4px; height: 20px; overflow: hidden; }
+  .candidate-bar-fill { height: 100%; background: var(--navy); border-radius: 4px; transition: width 0.3s ease; }
+  .candidate-row:first-child .candidate-bar-fill { background: var(--gold); }
+  .candidate-pct { width: 56px; text-align: right; font-size: 0.85rem; color: var(--gray); flex-shrink: 0; }
+
+  .caption-note { font-size: 0.82rem; color: var(--gray); margin-top: 10px; }
+  .question-box { background: #FFF8E8; border-left: 5px solid var(--gold); padding: 14px 18px; font-size: 0.95rem; border-radius: 4px; }
+  footer { max-width: 960px; margin: 20px auto 0 auto; padding: 0 20px; font-size: 0.78rem; color: #7A8794; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>How an LLM Generates Text</h1>
+  <p>This mental model explains how fluent text can be generated without guaranteeing truth. Everything below is computed by a real GPT-2 model running in your browser, not fabricated numbers.</p>
+</header>
+
+<main>
+
+  <section class="card">
+    <h2>Context So Far</h2>
+    <p class="status" id="loadStatus">Loading a real GPT-2 model, full precision for accuracy, roughly 250\u2013500MB depending on your connection, cached after first load&hellip;</p>
+    <div class="context-row">
+      <input type="text" id="contextInput" value="The capital of France is" />
+    </div>
+    <div class="tokens" id="tokenRow"></div>
+  </section>
+
+  <section class="card">
+    <h2>Watch It Flow</h2>
+    <svg id="networkSvg" viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg"></svg>
+    <p class="net-caption">The node-and-line diagram is a stylized illustration of information flowing through the network's layers, not a literal picture of GPT-2's internal structure. The probabilities below it are real, computed by an actual forward pass through the actual model.</p>
+    <div class="controls">
+      <button class="primary" id="generateBtn" disabled>Generate Next Token</button>
+      <button class="secondary" id="resetBtn">Reset</button>
+      <div class="temp-control">
+        <span>Temperature</span>
+        <input type="range" id="tempSlider" min="0.1" max="2" step="0.1" value="1">
+        <span class="temp-value" id="tempValue">1.0</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Next-Token Probabilities</h2>
+    <p class="caption-note">Click any token to append it to the context and continue. These are the real top candidates, in real proportion, for what comes next.</p>
+    <div class="candidates" id="candidates"></div>
+  </section>
+
+  <div class="question-box">
+    Notice: fluency comes from picking a statistically likely next token, over and over. Nothing in this process checks whether the resulting sentence is <em>true</em>. Try typing a context that has no single correct continuation, and watch the probabilities spread out instead of concentrating on one answer.
+  </div>
+
+</main>
+
+<footer>
+  AI disclosure: This tool was built with AI assistance (Claude, Anthropic) and runs a real GPT-2 model (via Transformers.js / Hugging Face) entirely in your browser. No text you type is sent to a server.
+</footer>
+
+<script type="module">
+import { AutoTokenizer, AutoModelForCausalLM } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+
+const loadStatus = document.getElementById('loadStatus');
+const contextInput = document.getElementById('contextInput');
+const tokenRow = document.getElementById('tokenRow');
+const generateBtn = document.getElementById('generateBtn');
+const resetBtn = document.getElementById('resetBtn');
+const tempSlider = document.getElementById('tempSlider');
+const tempValue = document.getElementById('tempValue');
+const candidatesDiv = document.getElementById('candidates');
+const svg = document.getElementById('networkSvg');
+
+let tokenizer = null;
+let model = null;
+let lastLogits = null;   // real logits array from the most recent forward pass
+let generatedCount = 0;
+const MAX_GENERATED = 25;
+
+// ---------- network visualization (stylized) ----------
+const LAYER_X = [60, 280, 500, 720, 860];
+const LAYER_NODES = [5, 6, 6, 6, 3];
+const NS = "http://www.w3.org/2000/svg";
+
+function buildNetwork() {
+  svg.innerHTML = '';
+  const positions = [];
+  LAYER_X.forEach((x, li) => {
+    const n = LAYER_NODES[li];
+    const col = [];
+    const gap = 220 / (n + 1);
+    for (let i = 0; i < n; i++) {
+      const y = 20 + gap * (i + 1);
+      col.push({ x, y });
+    }
+    positions.push(col);
+  });
+  // lines
+  for (let li = 0; li < positions.length - 1; li++) {
+    positions[li].forEach((a, ai) => {
+      positions[li + 1].forEach((b, bi) => {
+        const line = document.createElementNS(NS, 'line');
+        line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+        line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+        line.setAttribute('class', 'net-line');
+        line.dataset.layer = li;
+        svg.appendChild(line);
+      });
+    });
+  }
+  // nodes
+  positions.forEach((col, li) => {
+    col.forEach((p) => {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 9);
+      c.setAttribute('class', 'net-node');
+      c.dataset.layer = li;
+      svg.appendChild(c);
+    });
+  });
+  // labels
+  const labels = ['Tokens', 'Layer', 'Layer', 'Layer', 'Next\ntoken'];
+  labels.forEach((text, li) => {
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', LAYER_X[li]);
+    t.setAttribute('y', 254);
+    t.setAttribute('class', 'net-label');
+    t.textContent = text;
+    svg.appendChild(t);
+  });
+}
+
+async function animateFlow() {
+  const layers = LAYER_X.length;
+  for (let li = 0; li < layers; li++) {
+    svg.querySelectorAll(`.net-node[data-layer="${li}"]`).forEach(n => n.classList.add('pulse'));
+    if (li < layers - 1) {
+      svg.querySelectorAll(`.net-line[data-layer="${li}"]`).forEach(l => l.classList.add('pulse'));
+    }
+    await new Promise(r => setTimeout(r, 220));
+    svg.querySelectorAll(`.net-node[data-layer="${li}"]`).forEach(n => n.classList.remove('pulse'));
+    if (li < layers - 1) {
+      svg.querySelectorAll(`.net-line[data-layer="${li}"]`).forEach(l => l.classList.remove('pulse'));
+    }
+  }
+}
+
+// ---------- math ----------
+function softmaxWithTemperature(logits, temperature) {
+  const t = Math.max(0.05, temperature);
+  const scaled = logits.map(x => x / t);
+  const max = Math.max(...scaled);
+  const exps = scaled.map(x => Math.exp(x - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  return exps.map(x => x / sum);
+}
+
+function topK(probs, k) {
+  return probs
+    .map((p, i) => [i, p])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, k);
+}
+
+// ---------- rendering ----------
+function renderTokens() {
+  const text = contextInput.value;
+  const ids = tokenizer.encode(text);
+  tokenRow.innerHTML = '';
+  ids.forEach((id, i) => {
+    const span = document.createElement('span');
+    span.className = 'token' + (i === ids.length - 1 && generatedCount > 0 ? ' new' : '');
+    const piece = tokenizer.decode([id], { skip_special_tokens: true });
+    span.textContent = piece.trim() === '' ? '\u2423' : piece;
+    tokenRow.appendChild(span);
+  });
+}
+
+function renderCandidates(scored) {
+  candidatesDiv.innerHTML = '';
+  const maxP = scored[0][1];
+  scored.forEach(([id, p]) => {
+    const piece = tokenizer.decode([id], { skip_special_tokens: true });
+    const row = document.createElement('div');
+    row.className = 'candidate-row';
+    row.innerHTML = `
+      <div class="candidate-token">${piece.trim() === '' ? '\u2423' : piece}</div>
+      <div class="candidate-bar-track"><div class="candidate-bar-fill" style="width:${(p / maxP * 100).toFixed(1)}%;"></div></div>
+      <div class="candidate-pct">${(p * 100).toFixed(1)}%</div>
+    `;
+    row.addEventListener('click', () => appendToken(id));
+    candidatesDiv.appendChild(row);
+  });
+}
+
+// ---------- core generation step ----------
+async function runForwardPass() {
+  const text = contextInput.value;
+  if (!text.trim()) return;
+  generateBtn.disabled = true;
+  generateBtn.textContent = 'Thinking\u2026';
+
+  const [inputs] = await Promise.all([
+    tokenizer(text),
+    animateFlow(),
+  ]);
+  const output = await model(inputs);
+  const lastLogitsTensor = output.logits.slice(null, -1, null);
+  lastLogits = Array.from(lastLogitsTensor.data);
+
+  const temperature = parseFloat(tempSlider.value);
+  const probs = softmaxWithTemperature(lastLogits, temperature);
+  const scored = topK(probs, 8);
+  renderCandidates(scored);
+
+  generateBtn.disabled = generatedCount >= MAX_GENERATED;
+  generateBtn.textContent = 'Generate Next Token';
+}
+
+function appendToken(id) {
+  const piece = tokenizer.decode([id], { skip_special_tokens: true });
+  contextInput.value = contextInput.value + piece;
+  generatedCount++;
+  renderTokens();
+  if (generatedCount < MAX_GENERATED) {
+    runForwardPass();
+  } else {
+    generateBtn.disabled = true;
+    generateBtn.textContent = 'Max length reached';
+  }
+}
+
+// ---------- controls ----------
+generateBtn.addEventListener('click', runForwardPass);
+
+resetBtn.addEventListener('click', () => {
+  contextInput.value = 'The capital of France is';
+  generatedCount = 0;
+  candidatesDiv.innerHTML = '';
+  renderTokens();
+});
+
+contextInput.addEventListener('change', () => {
+  generatedCount = 0;
+  renderTokens();
+});
+
+tempSlider.addEventListener('input', () => {
+  tempValue.textContent = parseFloat(tempSlider.value).toFixed(1);
+  if (lastLogits) {
+    const probs = softmaxWithTemperature(lastLogits, parseFloat(tempSlider.value));
+    renderCandidates(topK(probs, 8));
+  }
+});
+
+// ---------- init ----------
+(async function init() {
+  buildNetwork();
+  try {
+    tokenizer = await AutoTokenizer.from_pretrained('Xenova/gpt2');
+    loadStatus.textContent = 'Loading model weights (full precision, larger download for better accuracy)\u2026';
+    model = await AutoModelForCausalLM.from_pretrained('Xenova/gpt2', { quantized: false });
+
+    loadStatus.textContent = 'Model loaded. Ready.';
+    loadStatus.classList.add('ready');
+    generateBtn.disabled = false;
+    renderTokens();
+  } catch (err) {
+    loadStatus.textContent = 'Could not load the model. Check your internet connection and reload the page.';
+    console.error(err);
+  }
+})();
+</script>
+
+</body>
+</html>
